@@ -10,10 +10,10 @@ using namespace std;
 //User-defined constants
 const int NUMBER_OF_ATOMS = 150;
 const int NUMBER_OF_ITERATIONS = 1000;
-const float MIN_GEN_DIST = 0.85;                 //Minimal allowed distance between atoms when they are spawned
-const float BOX_SIZE = 10;                       //Size of the box for periodic boundary conditions
-const float TIMESTEP = 0.01;                     //dt that we use for integration
+const float MIN_GEN_DIST = 1;                 //Minimal allowed distance between atoms when they are spawned
+const float BOX_SIZE = 12;                       //Size of the box for periodic boundary conditions
 const float R_CUTOFF = 3;                        //Cutoff range for Lennard-Jones potential
+const float TIMESTEP = 0.001;                     //dt that we use for integration
 
 const char* SAVE_FILE_NAME = "Trajectories.txt"; //Text file in which we save coordinates of all atoms every frame
 const char* ATOM_TYPE = "H";                     //Only affects Ovito representation
@@ -57,7 +57,7 @@ float getForce(float r) {
 struct Vec3D {
     float x, y, z;
     
-    Vec3D(float x=0, float y=0, float z=0): x(x), y(y), z(z) {}
+    explicit Vec3D(float x=0, float y=0, float z=0): x(x), y(y), z(z) {}
     Vec3D(const Vec3D& other): Vec3D(other.x, other.y, other.z) {}
 
     Vec3D& operator=(const Vec3D& other) {
@@ -66,90 +66,83 @@ struct Vec3D {
         z = other.z;
         return *this;
     }
-
     Vec3D& operator+=(const Vec3D& other) {
         x += other.x;
         y += other.y;
         z += other.z;
         return *this;
     }
-    Vec3D operator+(const Vec3D& other) {
+    Vec3D operator+(const Vec3D& other) const {
         Vec3D buff(*this);
         buff += other;
         return buff;
-    }Vec3D& operator-=(const Vec3D& other) {
+    }
+    Vec3D& operator-=(const Vec3D& other) {
         x -= other.x;
         y -= other.y;
         z -= other.z;
         return *this;
     }
-    Vec3D operator-(const Vec3D& other) {
+    Vec3D operator-(const Vec3D& other) const {
         Vec3D buff(*this);
         buff -= other;
         return buff;
     }
-    Vec3D& operator*=(float a) {
+    Vec3D& operator*=(const float a) {
         x *= a;
         y *= a;
         z *= a;
         return *this;
     }
-    Vec3D& operator/=(float a) {
+    Vec3D operator*(const float a) const {
+        Vec3D buff(*this);
+        buff *= a;
+        return buff;
+    }
+    Vec3D& operator/=(const float a) {
         x /= a;
         y /= a;
         z /= a;
         return *this;
     }
-    Vec3D operator*(float a) {
-        Vec3D buff(*this);
-        buff *= a;
-        return buff;
-    }Vec3D operator/(float a) {
+    Vec3D operator/(const float a) const {
         Vec3D buff(*this);
         buff /= a;
         return buff;
     }
 };
-Vec3D operator*(float a, Vec3D vec) {
+Vec3D operator*(float a, const Vec3D& vec) {
     return vec * a;
 }
+ostream& operator<<(ostream& os, const Vec3D& vec) {
+    os << vec.x << " " << vec.y << " " << vec.z;
+    return os;
+}
+float modSqr(const Vec3D& vec) { //Returns squared module of vector
+    return vec.x * vec.x + vec.y * vec.y + vec.z * vec.z; 
+}
+float mod(const Vec3D& vec) { //Returns module of vector
+    return sqrt(modSqr(vec));
+}
+
 
 struct Atom {
     float m;
-    float rPrev[3];
-    float rCurr[3];
-    float rNext[3];
-    float rAbs[3];
-    float aPrev[3];
-    float aCurr[3];
+    Vec3D rCurr, rPrev, rNext, rDispl;
+    Vec3D aCurr, aPrev;
 
-    Atom(float m, float x, float y, float z) : m(m) {
-        rCurr[0] = x;
-        rCurr[1] = y;
-        rCurr[2] = z;
-        for (int i = 0; i != 3; i++) {
-            rPrev[i] = rCurr[i];
-            rAbs[i] = rCurr[i];
-            rNext[i] = 0;
-            aCurr[i] = 0;
-        }
-    }
+    Atom(float m, float x, float y, float z) : m(m), rCurr(x, y, z), rPrev(rCurr), rNext(), rDispl(), aCurr(), aPrev() {}
 
     void Interact(Atom* other) {
-        if (other == this) { return; }
-        float imageCoord[3];
-        for (int i = 0; i != 3; i++) {
-            imageCoord[i] = other->rCurr[i];
-        }
+        if (other == this) { return; } //Do not interact if passed atom is this atom itself
 
-        findClosestImageCoord(imageCoord); //Function modifies the array
-        float dist = getDistTo(imageCoord[0], imageCoord[1], imageCoord[2]);
-        if (dist > R_CUTOFF) { return; }
+        Vec3D rImage = findClosestImageCoord(other->rCurr); //Function returns radius vector of the closest image
+        float dist = getDistTo(rImage);  
 
-        float aMod = getForce(dist) / m;                          //aMod > 0 means atoms are pulled together
-        for (int i = 0; i != 3; i++) {                            //aMod < 0 means atoms are pushed apart
-            aCurr[i] += aMod * (imageCoord[i] - rCurr[i]) / dist; //The signs of acceleration projections are all accounted for
-        }
+        if (dist > R_CUTOFF) { return; } //Do not interact if beyond cutoff range
+
+        float aMod = getForce(dist) / m;         //aMod > 0 means atoms are pulled together
+        aCurr += aMod * (rImage - rCurr) / dist; //aMod < 0 means atoms are pushed apart
     }
 
     void CalcSummaryAcc(Atom** allAtoms, int size) {
@@ -159,38 +152,52 @@ struct Atom {
     }
 
     void VerletPosUpd(float dt) {
-        for (int i = 0; i != 3; i++) {
-            rNext[i] = 2 * rCurr[i] - rPrev[i] + aCurr[i] * dt * dt; //Use Verlet integration scheme
+        rNext = 2 * rCurr - rPrev + aCurr * dt * dt; //Use Verlet integration scheme
+        rDispl += rNext - rCurr; //Add dr to displacement vector, then apply PBC
 
-            rAbs[i] += rNext[i] - rCurr[i]; //Save absolute coordinates, then apply PBC
-            while (rNext[i] < 0) {          
-                rNext[i] += BOX_SIZE;       
-                rCurr[i] += BOX_SIZE;       
-            }                              
-            while (rNext[i] > BOX_SIZE) {   
-                rNext[i] -= BOX_SIZE;       
-                rCurr[i] -= BOX_SIZE;       
-            }                               
+        float stepN;
+        stepN = floor(rNext.x / BOX_SIZE); //Applying PBC
+        rNext.x -= BOX_SIZE * stepN;       //
+        rCurr.x -= BOX_SIZE * stepN;       //
+        stepN = floor(rNext.y / BOX_SIZE); //
+        rNext.y -= BOX_SIZE * stepN;       //
+        rCurr.y -= BOX_SIZE * stepN;       //
+        stepN = floor(rNext.z / BOX_SIZE); //
+        rNext.z -= BOX_SIZE * stepN;       //
+        rCurr.z -= BOX_SIZE * stepN;       //                     
 
-            rPrev[i] = rCurr[i]; //rPrev may be out of box, but it allows to avoid jumps in Verlet scheme
-            rCurr[i] = rNext[i]; 
-            aCurr[i] = 0;            //Reset summary acceleration to zero
-        }
+        rPrev = rCurr; //rPrev may be out of box, but it allows to avoid jumps in Verlet scheme
+        rCurr = rNext; 
 
+        aPrev = aCurr;   //Save current acceleration
+        aCurr = Vec3D(); //Reset current acceleration to zero
     }
 
-    float* findClosestImageCoord(float* coordArr) {
-        float minD[3];
-        for (int i = 0; i != 3; i++) {
-            minD[i] = abs(rCurr[i] - coordArr[i]);
-            if (abs(rCurr[i] - coordArr[i] + BOX_SIZE) < minD[i]) {
-                coordArr[i] -= BOX_SIZE;
-            }
-            if (abs(rCurr[i] - coordArr[i] - BOX_SIZE) < minD[i]) {
-                coordArr[i] += BOX_SIZE;
-            }
+    Vec3D findClosestImageCoord(const Vec3D& rOther) {
+        Vec3D rImage(rOther);
+
+        if (abs(rCurr.x - (rImage.x - BOX_SIZE)) < abs(rCurr.x - rImage.x)) {
+            rImage.x -= BOX_SIZE;
         }
-        return minD;
+        else if (abs(rCurr.x - (rImage.x + BOX_SIZE)) < abs(rCurr.x - rImage.x)) {
+            rImage.x += BOX_SIZE;
+        }
+
+        if (abs(rCurr.y - (rImage.y - BOX_SIZE)) < abs(rCurr.y - rImage.y)) {
+            rImage.y -= BOX_SIZE;
+        }
+        else if (abs(rCurr.y - (rImage.y + BOX_SIZE)) < abs(rCurr.y - rImage.y)) {
+            rImage.y += BOX_SIZE;
+        }
+
+        if (abs(rCurr.z - (rImage.z - BOX_SIZE)) < abs(rCurr.z - rImage.z)) {
+            rImage.z -= BOX_SIZE;
+        }
+        else if (abs(rCurr.z - (rImage.z + BOX_SIZE)) < abs(rCurr.z - rImage.z)) {
+            rImage.z += BOX_SIZE;
+        }
+
+        return rImage;
     }
 
     bool isTooClose(Atom** allAtoms, int size) { 
@@ -202,72 +209,69 @@ struct Atom {
         return false;
     }
 
-    float getDistTo(float x, float y, float z) {
-        return sqrt((rCurr[0] - x) * (rCurr[0] - x) + (rCurr[1] - y) * (rCurr[1] - y) + (rCurr[2] - z) * (rCurr[2] - z));
+    float getSqrDistTo(const Vec3D& rOther) {
+        return modSqr(rCurr - rOther);
     }
-    float getDistTo(Atom* other) {
-        return getDistTo(other->rCurr[0], other->rCurr[1], other->rCurr[2]);
-    }
-
     float getSqrDistTo(float x, float y, float z) {
-        return (rCurr[0] - x) * (rCurr[0] - x) + (rCurr[1] - y) * (rCurr[1] - y) + (rCurr[2] - z) * (rCurr[2] - z);
+        Vec3D tmp(x, y, z);
+        return getSqrDistTo(tmp);
     }
     float getSqrDistTo(Atom* other) {
-        return getSqrDistTo(other->rCurr[0], other->rCurr[1], other->rCurr[2]);
+        return getSqrDistTo(other->rCurr);
     }
 
+    float getDistTo(const Vec3D& rOther) {
+        return sqrt(getSqrDistTo(rOther));
+    }
+    float getDistTo(float x, float y, float z) {
+        return sqrt(getSqrDistTo(x, y, z));
+    }
+    float getDistTo(Atom* other) {
+        return sqrt(getSqrDistTo(other));
+    }
 };
 
 
 int main() {
-    float tmp = R_MIN - 0.01;
-
-    cout << tmp << "\n";
-
-    cout << getPotEnergy(tmp) << "\n" << getForce(tmp);
-
-    /*
-    Atom* allAtoms[NUMBER_OF_ATOMS];
+    
+    Atom* allAtoms[NUMBER_OF_ATOMS];                                       
     for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                           //TODO: Initialization process of atoms should be optimized
         allAtoms[i] = new Atom(1, rndPos(rnd), rndPos(rnd), rndPos(rnd));  //
         if (allAtoms[i]->isTooClose(allAtoms, i)) {                        //
             delete allAtoms[i];                                            //
             i--;                                                           //
-            cout << "Retry" << "\n";
+            cout << "Retry" << "\n";                                       //
         }
     }
+    
     cout << "\n" << "All atoms successfully generated" << "\n\n";
 
     ofstream SaveFile(SAVE_FILE_NAME);                              //Open file in which trajectories will be saved
-    for (int iter = 0; iter != NUMBER_OF_ITERATIONS; iter++) {      //
-                                                                    //
+    for (int iter = 0; iter != NUMBER_OF_ITERATIONS; iter++) {      
+                                                                    
         if (iter % 100 == 0) {                                      //Display iteration counter in console just for convenience
             cout << "Iteration " << iter << "\n";                   //
         }                                                           //
-                                                                    //
+                                                                       
         SaveFile << NUMBER_OF_ATOMS << "\n\n";                      //This is for Ovito to work propperly
-                                                                    //
-        for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                //          
-                                                                    //
+                                                                    
+        for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                //Iterate through all atoms
             SaveFile << ATOM_TYPE << " "                            //Save coordinates of every atom to the text file
-                     << allAtoms[i]->rCurr[0] << " "                //
-                     << allAtoms[i]->rCurr[1] << " "                //
-                     << allAtoms[i]->rCurr[2] << "\n";              //
-                                                                    //
+                     << allAtoms[i]->rCurr << "\n";                 //
+                                                                    
             allAtoms[i]->CalcSummaryAcc(allAtoms, NUMBER_OF_ATOMS); //Make each atom interact with all other atoms
-        }                                                           //
-                                                                    //
+        }                                                           
+                                                                    
         for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                //Update every atom's position
-            allAtoms[i]->VerletPosUpd(TIMESTEP);
-        }
-
-    }
-    SaveFile.close();                  //Close the trajectories file
-    cout << "\n" << "Finished saving" << "\n"; //
+            allAtoms[i]->VerletPosUpd(TIMESTEP);                    //
+        }                                                           //
+    }                                                               
+    SaveFile.close();                                               //Close the trajectories file
+    cout << "\n" << "Finished saving" << "\n";                      //
 
     cout << "\n";
     for (int i = 0; i != NUMBER_OF_ATOMS; i++) {
-        cout << allAtoms[i]->rAbs[0] << " " << allAtoms[i]->rAbs[1] << " " << allAtoms[i]->rAbs[2] << "\n";
+        cout << allAtoms[i]->rDispl << "\n";
     }
-    */
+    
 }
