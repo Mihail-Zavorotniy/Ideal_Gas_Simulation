@@ -8,15 +8,17 @@ using namespace std;
 
 
 //User-defined constants
-const int NUMBER_OF_ATOMS = 150;
+const int NUMBER_OF_ATOMS = 150;                  //TODO: Figure out why system explodes so often
 const int NUMBER_OF_ITERATIONS = 1000;
-const float MIN_GEN_DIST = 1;                 //Minimal allowed distance between atoms when they are spawned
-const float BOX_SIZE = 12;                       //Size of the box for periodic boundary conditions
-const float R_CUTOFF = 3;                        //Cutoff range for Lennard-Jones potential
-const float TIMESTEP = 0.001;                     //dt that we use for integration
+const float MIN_GEN_DIST = 1;                     //Minimal allowed distance between atoms when they are spawned
+const float BOX_SIZE = 12;                        //Size of the box for periodic boundary conditions
+const float R_CUTOFF = 3;                         //Cutoff range for Lennard-Jones potential
+const float TIMESTEP = 0.01;                      //dt that we use for integration
 
-const char* SAVE_FILE_NAME = "Trajectories.txt"; //Text file in which we save coordinates of all atoms every frame
-const char* ATOM_TYPE = "H";                     //Only affects Ovito representation
+const char* TRAJECTORY_FILE = "Trajectories.txt"; //Text file in which we save coordinates of all atoms every frame
+const char* VELOCITY_FILE = "Velocities.txt";     //Text file in which we save velocities of all atoms every frame
+const char* ENERGY_FILE = "Energy.txt";           //Text file in which we save summary energy of system every frame
+const char* ATOM_TYPE = "H";                        //Only affects Ovito representation
 
 
 //Auxiliary functions
@@ -129,11 +131,12 @@ float mod(const Vec3D& vec) { //Returns module of vector
 struct Atom {
     float m;
     Vec3D rCurr, rPrev, rNext, rDispl;
-    Vec3D aCurr, aPrev;
+    Vec3D vPrev;
+    Vec3D aCurr;
 
-    Atom(float m, float x, float y, float z) : m(m), rCurr(x, y, z), rPrev(rCurr), rNext(), rDispl(), aCurr(), aPrev() {}
+    Atom(float m, float x, float y, float z) : m(m), rCurr(x, y, z), rPrev(rCurr), rNext(), rDispl(), vPrev(), aCurr() {}
 
-    void Interact(Atom* other) {
+    void interact(Atom* other) {
         if (other == this) { return; } //Do not interact if passed atom is this atom itself
 
         Vec3D rImage = findClosestImageCoord(other->rCurr); //Function returns radius vector of the closest image
@@ -145,14 +148,15 @@ struct Atom {
         aCurr += aMod * (rImage - rCurr) / dist; //aMod < 0 means atoms are pushed apart
     }
 
-    void CalcSummaryAcc(Atom** allAtoms, int size) {
+    void calcSummaryAcc(Atom** allAtoms, int size) {
         for (int i = 0; i != size; i++) {
-            Interact(allAtoms[i]);
+            interact(allAtoms[i]);
         }
     }
 
-    void VerletPosUpd(float dt) {
+    void verletPosUpd(float dt) {
         rNext = 2 * rCurr - rPrev + aCurr * dt * dt; //Use Verlet integration scheme
+        vPrev = (rNext - rPrev) / (2 * dt); //Calculate approximate velocity at previous step
         rDispl += rNext - rCurr; //Add dr to displacement vector, then apply PBC
 
         float stepN;
@@ -169,7 +173,6 @@ struct Atom {
         rPrev = rCurr; //rPrev may be out of box, but it allows to avoid jumps in Verlet scheme
         rCurr = rNext; 
 
-        aPrev = aCurr;   //Save current acceleration
         aCurr = Vec3D(); //Reset current acceleration to zero
     }
 
@@ -233,6 +236,7 @@ struct Atom {
 
 
 int main() {
+    float energyBuff(0);
     
     Atom* allAtoms[NUMBER_OF_ATOMS];                                       
     for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                           //TODO: Initialization process of atoms should be optimized
@@ -246,27 +250,35 @@ int main() {
     
     cout << "\n" << "All atoms successfully generated" << "\n\n";
 
-    ofstream SaveFile(SAVE_FILE_NAME);                              //Open file in which trajectories will be saved
+    ofstream trajFile(TRAJECTORY_FILE);                            //Open file in which trajectories will be saved
+    ofstream velFile(VELOCITY_FILE);                               //Open file in which velocities will be saved
+    ofstream energyFile(ENERGY_FILE);                              //Open file in which energies will be saved
     for (int iter = 0; iter != NUMBER_OF_ITERATIONS; iter++) {      
                                                                     
         if (iter % 100 == 0) {                                      //Display iteration counter in console just for convenience
             cout << "Iteration " << iter << "\n";                   //
         }                                                           //
                                                                        
-        SaveFile << NUMBER_OF_ATOMS << "\n\n";                      //This is for Ovito to work propperly
+        trajFile << NUMBER_OF_ATOMS << "\n\n";                      //This is for Ovito to work propperly
                                                                     
         for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                //Iterate through all atoms
-            SaveFile << ATOM_TYPE << " "                            //Save coordinates of every atom to the text file
-                     << allAtoms[i]->rCurr << "\n";                 //
+            allAtoms[i]->calcSummaryAcc(allAtoms, NUMBER_OF_ATOMS); //Make each atom interact with all other atoms
+        }             
                                                                     
-            allAtoms[i]->CalcSummaryAcc(allAtoms, NUMBER_OF_ATOMS); //Make each atom interact with all other atoms
-        }                                                           
-                                                                    
-        for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                //Update every atom's position
-            allAtoms[i]->VerletPosUpd(TIMESTEP);                    //
-        }                                                           //
+        for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                //Iterate through all atoms again
+            trajFile << ATOM_TYPE << " "                            //Save coordinates of every atom to the text file
+                << allAtoms[i]->rCurr << "\n";                      //
+            
+            allAtoms[i]->verletPosUpd(TIMESTEP);                    //Update every atom's position
+
+            velFile << allAtoms[i]->vPrev << "\n";                  //Save velocities of every atom to the text file
+        }
+
+        velFile << "\n";
     }                                                               
-    SaveFile.close();                                               //Close the trajectories file
+    trajFile.close();                                               //Close the trajectory file
+    velFile.close();                                                //Close the velocity file
+    energyFile.close();                                             //Close the energy file
     cout << "\n" << "Finished saving" << "\n";                      //
 
     cout << "\n";
