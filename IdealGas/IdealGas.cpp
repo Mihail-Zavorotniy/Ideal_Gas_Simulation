@@ -8,12 +8,12 @@ using namespace std;
 
 
 //User-defined constants
-const int NUMBER_OF_ATOMS = 150;                           //TODO: Figure out why system explodes so often
+const int NUMBER_OF_ATOMS = 10;                             //TODO: Figure out why system explodes so often
 const int NUMBER_OF_ITERATIONS = 1000;
 const float MIN_GEN_DIST = 1;                              //Minimal allowed distance between atoms when they are spawned
-const float BOX_SIZE = 12;                                 //Size of the box for periodic boundary conditions
+const float BOX_SIZE = 6;                                 //Size of the box for periodic boundary conditions
 const float R_CUTOFF = 3;                                  //Cutoff range for Lennard-Jones potential
-const float TIMESTEP = 0.01;                               //dt that we use for integration
+const float TIMESTEP = 0.001;                              //dt that we use for integration
 
 const char* TRAJECTORY_FILE = "Trajectories.txt";          //Text file in which we save coordinates of all atoms every frame
 const char* VELOCITY_FILE = "Velocities.txt";              //Text file in which we save velocities of all atoms every frame
@@ -241,9 +241,8 @@ struct Atom {
 
 
 int main() {
-    float energyBuff(0);
-    
-    Atom* allAtoms[NUMBER_OF_ATOMS];                                       
+    Atom* allAtoms[NUMBER_OF_ATOMS];    
+
     for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                                  //TODO: Initialization process of atoms should be optimized
         Vec3D r(rndPos(rnd), rndPos(rnd), rndPos(rnd));                           //
         Vec3D v(0, 0, 0);                                                         //TODO: Add gamma distribution for velocities
@@ -256,13 +255,14 @@ int main() {
     }                                                                             //
     for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                                  //
         allAtoms[i]->aCurrUpd(allAtoms, NUMBER_OF_ATOMS);                         //
-    }
+    }                                                                             //
     
     cout << "\n" << "All atoms successfully generated" << "\n\n";
 
     ofstream trajFile(TRAJECTORY_FILE);                                           //Open file in which trajectories will be saved
     ofstream velFile(VELOCITY_FILE);                                              //Open file in which velocities will be saved
     ofstream potEnergyFile(POT_ENERGY_FILE);                                      //Open file in which energies will be saved
+
     for (int iter = 0; iter != NUMBER_OF_ITERATIONS; iter++) {                                               
         if (iter % 100 == 0) {                                                    //Display iteration counter in console just for convenience
             cout << "Iteration " << iter << "\n";                                 //
@@ -280,7 +280,8 @@ int main() {
         for (int i = 0; i != NUMBER_OF_ATOMS; i++) {                              //Iterate through all atoms again       
             allAtoms[i]->verletPosUpd(TIMESTEP, allAtoms, NUMBER_OF_ATOMS);       //Update every atom's position
         }
-    }                                                               
+    }      
+
     trajFile.close();                                                             //Close the trajectory file
     velFile.close();                                                              //Close the velocity file
     potEnergyFile.close();                                                        //Close the energy file
